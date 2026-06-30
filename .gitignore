@@ -1,0 +1,17 @@
+# TrackMan data (proprietary)
+trackman_data/
+*.csv
+
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# shinyapps.io deployment
+rsconnect/
+
+# OS files
+.DS_Store
+Thumbs.db
