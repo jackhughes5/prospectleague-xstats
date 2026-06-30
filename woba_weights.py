@@ -1,19 +1,9 @@
 """
-woba_weights.py
+Derives Prospect League wOBA weights from play-by-play XML data + run expectancy matrix.
 
-Parses PrestoSports XML play-by-play data, computes the run value of each
-event type using the run expectancy matrix, and outputs Prospect League-
-specific wOBA linear weights.
+For each PA in the XML data, computes run_value = RE(after) + runs_scored - RE(before),
+then averages by event type to get linear weights. Outputs ready-to-paste R code for app.R.
 
-Uses the same parsing logic as your baseball_sim.py / parse_phase2.py.
-
-Usage:
-    python derive_woba_weights.py
-
-Output:
-    - Per-event run values
-    - wOBA linear weights (run values above out)
-    - Ready-to-paste R code for app.R
 """
 
 import xml.etree.ElementTree as ET
@@ -21,25 +11,16 @@ import glob
 import csv
 from collections import defaultdict
 
-# ═══════════════════════════════════════════════════════════
-# CONFIG — update these paths for your machine
-# ═══════════════════════════════════════════════════════════
-
-# Path to your PrestoSports XML box scores (recursive glob)
+# paths
 DATA_GLOB = "/Users/jackhughes/Desktop/CornbeltersProjects/RE_Matrix/**/*.xml"
-
-# Path to your run expectancy matrix CSV
 RE_MATRIX_PATH = "/Users/jackhughes/Desktop/CornbeltersProjects/RE_Matrix/matrices/pl_all.csv"
 
 TERMINAL = (0, 0, 0, 3)
 
 
-# ═══════════════════════════════════════════════════════════
-# XML PARSER (same logic as parse_phase2.py)
-# ═══════════════════════════════════════════════════════════
+# parsing ----
 
 def classify_event(action):
-    """Classify a batter action string into an event type."""
     tok = (action or "").strip().split()
     if not tok:
         return None
@@ -52,7 +33,6 @@ def classify_event(action):
 
 
 def base_out_state(play):
-    """The base-out state at the START of this play."""
     outs_str = play.get("outs")
     if outs_str is None:
         return None
@@ -87,7 +67,7 @@ def is_tiebreaker(batting):
 
 
 def half_inning_rows(batting):
-    """Parse one half-inning into a list of {before, after, runs, event} dicts."""
+    """Parse one half-inning into transition dicts with before/after states."""
     groups, cur, outs_made = [], None, 0
 
     for play in batting.findall("play"):
@@ -129,20 +109,17 @@ def half_inning_rows(batting):
         if g["event"] is None:
             continue
 
-        rows.append(
-            {
-                "before": g["before"],
-                "after": after,
-                "runs": max(0, g["runs"]),
-                "event": g["event"],
-            }
-        )
+        rows.append({
+            "before": g["before"],
+            "after": after,
+            "runs": max(0, g["runs"]),
+            "event": g["event"],
+        })
 
     return rows
 
 
 def parse_all_games(data_glob):
-    """Parse all XML files and return a list of PA transition dicts."""
     files = sorted(glob.glob(data_glob, recursive=True))
     print(f"Found {len(files)} game files")
 
@@ -164,12 +141,9 @@ def parse_all_games(data_glob):
     return all_rows
 
 
-# ═══════════════════════════════════════════════════════════
-# RE MATRIX LOADER
-# ═══════════════════════════════════════════════════════════
+# RE matrix ----
 
 def load_re_matrix(path):
-    """Load RE matrix CSV into a lookup dict: (outs, b1, b2, b3) -> expected_runs."""
     lookup = {}
     with open(path) as f:
         reader = csv.DictReader(f)
@@ -182,27 +156,21 @@ def load_re_matrix(path):
 
 
 def get_re(state, re_lookup):
-    """Look up RE for a state. Terminal (3 outs) = 0."""
     if state[3] >= 3:
         return 0.0
     return re_lookup.get(state, 0.0)
 
 
-# ═══════════════════════════════════════════════════════════
-# WEIGHT DERIVATION
-# ═══════════════════════════════════════════════════════════
+# weight derivation ----
 
 def derive_weights(rows, re_lookup):
-    """Compute average run value per event type."""
     run_values = defaultdict(list)
-
     for row in rows:
         re_before = get_re(row["before"], re_lookup)
         re_after = get_re(row["after"], re_lookup)
         rv = re_after + row["runs"] - re_before
         run_values[row["event"]].append(rv)
 
-    # Average run value per event type
     avg_rv = {}
     counts = {}
     for event, values in run_values.items():
@@ -212,30 +180,18 @@ def derive_weights(rows, re_lookup):
     return avg_rv, counts
 
 
-# ═══════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
-    # 1. Load RE matrix
     print("Loading RE matrix...")
     re_lookup = load_re_matrix(RE_MATRIX_PATH)
     print(f"  {len(re_lookup)} states loaded\n")
 
-    # 2. Parse play-by-play
     print("Parsing XML play-by-play...")
     rows = parse_all_games(DATA_GLOB)
 
-    # 3. Derive weights
     avg_rv, counts = derive_weights(rows, re_lookup)
-
     out_value = avg_rv.get("OUT", 0)
 
-    # 4. Display results
-    print("\n" + "=" * 60)
-    print("PROSPECT LEAGUE wOBA WEIGHTS (empirical from play-by-play)")
-    print("=" * 60)
-
+    # results
     print(f"\n{'Event':>8s}  {'Count':>7s}  {'Avg Run Val':>11s}  {'Above Out':>10s}")
     print("-" * 45)
 
@@ -248,35 +204,3 @@ if __name__ == "__main__":
         weights[event] = above
         label = "(baseline)" if event == "OUT" else f"{above:.4f}"
         print(f"{event:>8s}  {counts[event]:>7,d}  {rv:>+11.4f}  {label:>10s}")
-
-    # 5. Compare with estimates and MLB
-    mlb = {"BB": 0.69, "1B": 0.89, "2B": 1.27, "3B": 1.62, "HR": 2.10}
-    est = {"BB": 0.8663, "1B": 1.0173, "2B": 1.3322, "3B": 1.5820, "HR": 1.9104}
-
-    print(f"\n{'Event':>8s}  {'Empirical':>10s}  {'Estimated':>10s}  {'MLB':>8s}")
-    print("-" * 45)
-    for e in ["BB", "1B", "2B", "3B", "HR"]:
-        emp = weights.get(e, 0)
-        print(f"{e:>8s}  {emp:>10.4f}  {est[e]:>10.4f}  {mlb[e]:>8.4f}")
-
-    # 6. Output R code
-    print("\n" + "=" * 60)
-    print("PASTE INTO app.R (replace the xwOBA lines):")
-    print("=" * 60)
-    w = weights
-    print(
-        f"\n# In the 'expected' mutate (line ~188):"
-        f"\n# Prospect League wOBA weights (empirical from play-by-play + RE matrix)"
-        f"\nxwOBA = {w.get('BB',0):.4f}*xBB + {w.get('1B',0):.4f}*x1B_final + "
-        f"{w.get('2B',0):.4f}*x2B_final +"
-        f"\n        {w.get('3B',0):.4f}*x3B_final + {w.get('HR',0):.4f}*xHR_final,"
-    )
-    print(
-        f"\n# In pa_timeline BIP xwOBA (line ~277):"
-        f"\npa_xwOBA = {w.get('1B',0):.4f}*`1B` + {w.get('2B',0):.4f}*`2B` + "
-        f"{w.get('3B',0):.4f}*`3B` + {w.get('HR',0):.4f}*HR,"
-    )
-    print(
-        f"\n# In pa_timeline BB/HBP xwOBA (line ~294):"
-        f"\npa_xwOBA = ifelse(pa_type %in% c(\"BB\", \"HBP\"), {w.get('BB',0):.4f}, 0),"
-    )
